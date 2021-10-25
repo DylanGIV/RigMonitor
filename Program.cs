@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.NetworkInformation;
@@ -46,7 +47,21 @@ namespace RigMonitor
         public string DeviceId;
         public string RigId;
     }
-
+    struct PostDevicesStatsModel
+    {
+        public DateTime Timestamp;
+        public List<DeviceStats> DevicesStats;
+    }
+    struct DeviceStats
+    {
+        public string DeviceId;
+        public uint Temperature;
+        public float PowerUsage;
+        public uint FanSpeed;
+        public uint MemoryClockSpeed;
+        public uint CoreClockSpeed;
+        public uint DeviceUsage;
+    }
     class JWT
     {
         public string Token { get; set; }
@@ -196,6 +211,31 @@ namespace RigMonitor
                 throw;
             }
         }
+        static async Task PostDevicesStats (List<DeviceStats> postDevicesStats)
+        {
+            var devicesStats = new PostDevicesStatsModel
+            {
+                Timestamp = DateTime.UtcNow,
+                DevicesStats = postDevicesStats
+            };
+
+            var json = JsonConvert.SerializeObject(devicesStats);
+            var devicesStatsContent = new StringContent(json, UnicodeEncoding.UTF8, "application/json");
+
+            try
+            {
+                HttpResponseMessage response = await client.PostAsync("http://localhost:59921/DeviceStats", devicesStatsContent);
+                response.EnsureSuccessStatusCode();
+                string responseBody = await response.Content.ReadAsStringAsync();
+            }
+            catch (HttpRequestException e)
+            {
+                Console.WriteLine("\nException Caught!");
+                Console.WriteLine("Message :{0} ", e.Message);
+
+                throw;
+            }
+        }
         static async Task<RigResponse> GetRig(string rigId)
         {
             try
@@ -266,18 +306,34 @@ namespace RigMonitor
 
             while (true)
             {
+                var devicesStats = new List<DeviceStats>();
                 // Get stats of each device and store them, these will be overwritten.
                 for (uint i = 0; i < deviceCount; i++)
                 {
-                    NvmlNativeMethods.nvmlDeviceGetTemperature(devices[i].NvmlDevice, nvmlTemperatureSensors.Gpu, ref devices[i].Temperature);
-                    NvmlNativeMethods.nvmlDeviceGetFanSpeed(devices[i].NvmlDevice, ref devices[i].FanSpeed);
-                    NvmlNativeMethods.nvmlDeviceGetPowerUsage(devices[i].NvmlDevice, ref devices[i].PowerUsage);
-                    NvmlNativeMethods.nvmlDeviceGetClock(devices[i].NvmlDevice, nvmlClockType.Mem, nvmlClockId.Current, ref devices[i].MemoryClockSpeed);
-                    NvmlNativeMethods.nvmlDeviceGetClock(devices[i].NvmlDevice, nvmlClockType.Graphics, nvmlClockId.Current, ref devices[i].CoreClockSpeed);
-                    NvmlNativeMethods.nvmlDeviceGetUtilizationRates(devices[i].NvmlDevice, ref devices[i].DeviceUsage);
+                    var tempNvmlUtilization = new nvmlUtilization();
+                    var tempPowerUsage = new uint();
+                    var tempDeviceStats = new DeviceStats
+                    {
+                        DeviceId = devices[i].DeviceId
+                    };
+
+                    NvmlNativeMethods.nvmlDeviceGetTemperature(devices[i].NvmlDevice, nvmlTemperatureSensors.Gpu, ref tempDeviceStats.Temperature);
+                    NvmlNativeMethods.nvmlDeviceGetFanSpeed(devices[i].NvmlDevice, ref tempDeviceStats.FanSpeed);
+
+                    NvmlNativeMethods.nvmlDeviceGetPowerUsage(devices[i].NvmlDevice, ref tempPowerUsage);
+                    tempDeviceStats.PowerUsage = (((float)tempPowerUsage) / 1000);  // Convert to Watts
+
+                    NvmlNativeMethods.nvmlDeviceGetClock(devices[i].NvmlDevice, nvmlClockType.Mem, nvmlClockId.Current, ref tempDeviceStats.MemoryClockSpeed);
+                    NvmlNativeMethods.nvmlDeviceGetClock(devices[i].NvmlDevice, nvmlClockType.Graphics, nvmlClockId.Current, ref tempDeviceStats.CoreClockSpeed);
+
+                    NvmlNativeMethods.nvmlDeviceGetUtilizationRates(devices[i].NvmlDevice, ref tempNvmlUtilization); // Returns an object but we need just one of its values: gpu usage
+                    tempDeviceStats.DeviceUsage = tempNvmlUtilization.gpu;  
+
+                    devicesStats.Add(tempDeviceStats);
                 }
 
                 Console.WriteLine("Retrieved");
+                await PostDevicesStats(devicesStats);
 
                 // Sleep 10 seconds
                 Thread.Sleep(10000);
