@@ -2,7 +2,9 @@
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.NetworkInformation;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using ManagedCuda.Nvml;
 using Newtonsoft.Json;
@@ -29,8 +31,20 @@ namespace RigMonitor
     }
     struct PostRigModel
     {
+        public string RigId;
         public string RigName;
         public string RigDescription;
+    }
+    struct PostDevices
+    {
+        public List<PostDeviceModel> Devices;
+    }
+    struct PostDeviceModel
+    {
+        public string DeviceName;
+        public string DeviceDescription;
+        public string DeviceId;
+        public string RigId;
     }
 
     class JWT
@@ -40,7 +54,7 @@ namespace RigMonitor
     
     class RigResponse
     {
-        public long RigId { get; set; }
+        public string RigId { get; set; }
         public string RigName { get; set; }
         public string RigDescription { get; set; }
         public string UserId { get; set; }
@@ -48,9 +62,39 @@ namespace RigMonitor
 
     class Program
     {
-
-
         static readonly HttpClient client = new HttpClient();
+        static readonly string URL = "http://rig-monitor-api.herokuapp.com";
+        static readonly string LocalURL = "http://Localhost:59921";
+        public static string GetMACAddress()
+        {
+            NetworkInterface[] nics = NetworkInterface.GetAllNetworkInterfaces();
+
+            if (nics == null || nics.Length < 1)
+            {
+                Console.WriteLine("  No network interfaces found.");
+                return null;
+            }
+
+            Dictionary<string, long> macAddresses = new Dictionary<string, long>();
+            foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus == OperationalStatus.Up)
+                    macAddresses[nic.GetPhysicalAddress().ToString()] = nic.GetIPStatistics().BytesSent + nic.GetIPStatistics().BytesReceived;
+            }
+
+            long maxValue = 0;
+            string mac = "";
+
+            foreach (KeyValuePair<string, long> pair in macAddresses)
+            {
+                if (pair.Value > maxValue)
+                {
+                    mac = pair.Key;
+                    maxValue = pair.Value;
+                }
+            }
+            return mac;
+        }
         static async Task LogIn(string username, string password)
         {
             var logInModel = new LogInModel
@@ -64,7 +108,7 @@ namespace RigMonitor
 
             try
             {
-                HttpResponseMessage response = await client.PostAsync("http://localhost:59921/api/Authenticate/login", logInContent);
+                HttpResponseMessage response = await client.PostAsync("http://rig-monitor-api.herokuapp.com/api/Authenticate/login", logInContent);
                 response.EnsureSuccessStatusCode();
                 string responseBody = await response.Content.ReadAsStringAsync();
 
@@ -81,10 +125,11 @@ namespace RigMonitor
                 throw;
             }
         }
-        static async Task<RigResponse> PostRig(string rigName, string rigDescription)
+        static async Task<RigResponse> PostRig(string rigId, string rigName, string rigDescription)
         {
             var rigModel = new PostRigModel
             {
+                RigId = rigId,
                 RigName = rigName,
                 RigDescription = rigDescription
             };
@@ -94,7 +139,7 @@ namespace RigMonitor
 
             try
             {
-                HttpResponseMessage response = await client.PostAsync("http://localhost:59921/Rig", rigContent);
+                HttpResponseMessage response = await client.PostAsync("http://rig-monitor-api.herokuapp.com/Rig", rigContent);
                 response.EnsureSuccessStatusCode();
                 string responseBody = await response.Content.ReadAsStringAsync();
 
@@ -110,11 +155,52 @@ namespace RigMonitor
                 throw;
             }
         }
-        static async Task<RigResponse> GetRig(long rigId)
+        static async Task<PostDevices> PostDevices(Device[] postDevices, string rigId)
+        {
+            var devices = new List<PostDeviceModel>();
+            foreach (var device in postDevices)
+            {
+                var tempPostDevice = new PostDeviceModel
+                {
+                    DeviceName = device.DeviceName,
+                    DeviceDescription = "",
+                    DeviceId = device.DeviceId,
+                    RigId = rigId
+                };
+
+                devices.Add(tempPostDevice);
+            }
+            var listOfDevices = new PostDevices
+            {
+                Devices = devices
+            };
+
+            var json = JsonConvert.SerializeObject(listOfDevices);
+            var devicesContent = new StringContent(json, UnicodeEncoding.UTF8, "application/json");
+
+            try
+            {
+                HttpResponseMessage response = await client.PostAsync("http://rig-monitor-api.herokuapp.com/Device", devicesContent);
+                response.EnsureSuccessStatusCode();
+                string responseBody = await response.Content.ReadAsStringAsync();
+
+                var deserialized = JsonConvert.DeserializeObject<PostDevices>(responseBody);
+                return deserialized;
+
+            }
+            catch (HttpRequestException e)
+            {
+                Console.WriteLine("\nException Caught!");
+                Console.WriteLine("Message :{0} ", e.Message);
+
+                throw;
+            }
+        }
+        static async Task<RigResponse> GetRig(string rigId)
         {
             try
             {
-                HttpResponseMessage response = await client.GetAsync($"http://localhost:59921/Rig/rigId?rigId={rigId}");
+                HttpResponseMessage response = await client.GetAsync($"http://rig-monitor-api.herokuapp.com/Rig/rigId?rigId={rigId}");
                 response.EnsureSuccessStatusCode();
                 string responseBody = await response.Content.ReadAsStringAsync();
 
@@ -127,12 +213,11 @@ namespace RigMonitor
                 Console.WriteLine("\nException Caught!");
                 Console.WriteLine("Message :{0} ", e.Message);
 
-                throw;
+                return null;
             }
         }
         static async Task Main()
         {
-            long rigId = 10;
             string username = "TestRig";
             string password = "!1String";
             uint deviceCount = 0;
@@ -140,16 +225,28 @@ namespace RigMonitor
             await LogIn(username, password);
 
             //string email = "TestRig@email.com";
-            //string rigName = "Rig001";
-            //string rigDescription = "Main Machine";
-            //var rigResponse = await PostRig(rigName, rigDescription);
+            string rigName = "Rig001";
+            string rigDescription = "Main Machine";
+
+            var rigId = GetMACAddress();
+            Console.WriteLine(rigId);
+
 
             var currentRig = await GetRig(rigId);
-            Console.WriteLine(currentRig.RigName);
 
+            if (currentRig == null)
+            {
+                var rigResponse = await PostRig(rigId, rigName, rigDescription);
+                Console.WriteLine(rigResponse.RigId);
+            }
+            else
+            {
+                Console.WriteLine(currentRig.RigName);
+            }
 
             // Initialize NVML
             NvmlNativeMethods.nvmlInit();
+
             // Retrieve the amount of NVIDIA Devices
             NvmlNativeMethods.nvmlDeviceGetCount(ref deviceCount);
 
@@ -165,18 +262,26 @@ namespace RigMonitor
                 NvmlNativeMethods.nvmlDeviceGetName(devices[i].NvmlDevice, out devices[i].DeviceName);
             }
 
-            // Get stats of each device and store them, these will be overwritten.
-            for (uint i = 0; i < deviceCount; i++)
-            {
-                NvmlNativeMethods.nvmlDeviceGetTemperature(devices[i].NvmlDevice, nvmlTemperatureSensors.Gpu, ref devices[i].Temperature);
-                NvmlNativeMethods.nvmlDeviceGetFanSpeed(devices[i].NvmlDevice, ref devices[i].FanSpeed);
-                NvmlNativeMethods.nvmlDeviceGetPowerUsage(devices[i].NvmlDevice, ref devices[i].PowerUsage);
-                NvmlNativeMethods.nvmlDeviceGetClock(devices[i].NvmlDevice, nvmlClockType.Mem, nvmlClockId.Current, ref devices[i].MemoryClockSpeed);
-                NvmlNativeMethods.nvmlDeviceGetClock(devices[i].NvmlDevice, nvmlClockType.Graphics, nvmlClockId.Current, ref devices[i].CoreClockSpeed);
-                NvmlNativeMethods.nvmlDeviceGetUtilizationRates(devices[i].NvmlDevice, ref devices[i].DeviceUsage);
-            }
+            await PostDevices(devices, rigId);
 
-            Console.WriteLine(deviceCount);
+            while (true)
+            {
+                // Get stats of each device and store them, these will be overwritten.
+                for (uint i = 0; i < deviceCount; i++)
+                {
+                    NvmlNativeMethods.nvmlDeviceGetTemperature(devices[i].NvmlDevice, nvmlTemperatureSensors.Gpu, ref devices[i].Temperature);
+                    NvmlNativeMethods.nvmlDeviceGetFanSpeed(devices[i].NvmlDevice, ref devices[i].FanSpeed);
+                    NvmlNativeMethods.nvmlDeviceGetPowerUsage(devices[i].NvmlDevice, ref devices[i].PowerUsage);
+                    NvmlNativeMethods.nvmlDeviceGetClock(devices[i].NvmlDevice, nvmlClockType.Mem, nvmlClockId.Current, ref devices[i].MemoryClockSpeed);
+                    NvmlNativeMethods.nvmlDeviceGetClock(devices[i].NvmlDevice, nvmlClockType.Graphics, nvmlClockId.Current, ref devices[i].CoreClockSpeed);
+                    NvmlNativeMethods.nvmlDeviceGetUtilizationRates(devices[i].NvmlDevice, ref devices[i].DeviceUsage);
+                }
+
+                Console.WriteLine("Retrieved");
+
+                // Sleep 10 seconds
+                Thread.Sleep(10000);
+            }
         }
     }
 }
