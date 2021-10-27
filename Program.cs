@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations.Schema;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.NetworkInformation;
@@ -17,14 +16,7 @@ namespace RigMonitor
         public nvmlDevice NvmlDevice;
         public string DeviceId;
         public string DeviceName;
-        public uint Temperature;
-        public uint PowerUsage;
-        public uint FanSpeed;
-        public uint MemoryClockSpeed;
-        public uint CoreClockSpeed;
-        public nvmlUtilization DeviceUsage;
     }
-
     struct LogInModel
     {
         public string Username;
@@ -66,7 +58,6 @@ namespace RigMonitor
     {
         public string Token { get; set; }
     }
-    
     class RigResponse
     {
         public string RigId { get; set; }
@@ -78,10 +69,11 @@ namespace RigMonitor
     class Program
     {
         static readonly HttpClient client = new HttpClient();
-        static readonly string URL = "http://rig-monitor-api.herokuapp.com";
-        static readonly string LocalURL = "http://Localhost:59921";
         public static string GetMACAddress()
         {
+            // This code will pull the MAC address of the network interface that has the most bytes sent/received.
+            // This is done so we always select the MAC address that has the main internet connection.
+
             NetworkInterface[] nics = NetworkInterface.GetAllNetworkInterfaces();
 
             if (nics == null || nics.Length < 1)
@@ -224,7 +216,7 @@ namespace RigMonitor
 
             try
             {
-                HttpResponseMessage response = await client.PostAsync("http://localhost:59921/DeviceStats", devicesStatsContent);
+                HttpResponseMessage response = await client.PostAsync("http://rig-monitor-api.herokuapp.com/DeviceStats", devicesStatsContent);
                 response.EnsureSuccessStatusCode();
                 string responseBody = await response.Content.ReadAsStringAsync();
             }
@@ -269,8 +261,6 @@ namespace RigMonitor
             string rigDescription = "Main Machine";
 
             var rigId = GetMACAddress();
-            Console.WriteLine(rigId);
-
 
             var currentRig = await GetRig(rigId);
 
@@ -278,10 +268,6 @@ namespace RigMonitor
             {
                 var rigResponse = await PostRig(rigId, rigName, rigDescription);
                 Console.WriteLine(rigResponse.RigId);
-            }
-            else
-            {
-                Console.WriteLine(currentRig.RigName);
             }
 
             // Initialize NVML
@@ -302,13 +288,14 @@ namespace RigMonitor
                 NvmlNativeMethods.nvmlDeviceGetName(devices[i].NvmlDevice, out devices[i].DeviceName);
             }
 
+            // Save devices to the database.
             await PostDevices(devices, rigId);
 
             while (true)
             {
-                var devicesStats = new List<DeviceStats>();
-                // Get stats of each device and store them, these will be overwritten.
-                for (uint i = 0; i < deviceCount; i++)
+                // Get stats of each device and store them, these will be overwritten, but saved to database.
+                var devicesStats = new List<DeviceStats>();    
+                for (uint i = 0; i < deviceCount; i++)  
                 {
                     var tempNvmlUtilization = new nvmlUtilization();
                     var tempPowerUsage = new uint();
@@ -320,19 +307,18 @@ namespace RigMonitor
                     NvmlNativeMethods.nvmlDeviceGetTemperature(devices[i].NvmlDevice, nvmlTemperatureSensors.Gpu, ref tempDeviceStats.Temperature);
                     NvmlNativeMethods.nvmlDeviceGetFanSpeed(devices[i].NvmlDevice, ref tempDeviceStats.FanSpeed);
 
-                    NvmlNativeMethods.nvmlDeviceGetPowerUsage(devices[i].NvmlDevice, ref tempPowerUsage);
+                    NvmlNativeMethods.nvmlDeviceGetPowerUsage(devices[i].NvmlDevice, ref tempPowerUsage); //
                     tempDeviceStats.PowerUsage = (((float)tempPowerUsage) / 1000);  // Convert to Watts
 
                     NvmlNativeMethods.nvmlDeviceGetClock(devices[i].NvmlDevice, nvmlClockType.Mem, nvmlClockId.Current, ref tempDeviceStats.MemoryClockSpeed);
                     NvmlNativeMethods.nvmlDeviceGetClock(devices[i].NvmlDevice, nvmlClockType.Graphics, nvmlClockId.Current, ref tempDeviceStats.CoreClockSpeed);
 
                     NvmlNativeMethods.nvmlDeviceGetUtilizationRates(devices[i].NvmlDevice, ref tempNvmlUtilization); // Returns an object but we need just one of its values: gpu usage
-                    tempDeviceStats.DeviceUsage = tempNvmlUtilization.gpu;  
+                    tempDeviceStats.DeviceUsage = tempNvmlUtilization.gpu;  //
 
                     devicesStats.Add(tempDeviceStats);
-                }
+                } 
 
-                Console.WriteLine("Retrieved");
                 await PostDevicesStats(devicesStats);
 
                 // Sleep 10 seconds
